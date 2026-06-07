@@ -53,6 +53,24 @@ async def create_user(
         )
 
 
+async def update_base_currency(pool: asyncpg.Pool, tg_id: int, code: str) -> None:
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "UPDATE users SET base_currency = $2 WHERE telegram_user_id = $1",
+            tg_id,
+            code,
+        )
+
+
+async def update_default_currency(pool: asyncpg.Pool, tg_id: int, code: str) -> None:
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "UPDATE users SET default_currency = $2 WHERE telegram_user_id = $1",
+            tg_id,
+            code,
+        )
+
+
 # ── Place -> category dictionary ─────────────────────────────────────────────
 
 async def get_place_category(

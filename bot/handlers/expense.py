@@ -1,4 +1,4 @@
-"""Expense entry conversation: amount+place -> currency -> category -> comment -> date."""
+"""Expense entry as a single editable card: prefill everything, tap to change, Save."""
 from __future__ import annotations
 
 import datetime as dt
@@ -18,21 +18,53 @@ from telegram.ext import (
 from .. import db
 from ..categories import normalize_place, suggest_category
 from ..keyboards import (
-    category_keyboard,
-    comment_keyboard,
-    currency_keyboard,
-    date_keyboard,
+    back_keyboard,
+    card_category_picker,
+    card_currency_picker,
+    card_date_picker,
+    expense_card_keyboard,
 )
 
 logger = logging.getLogger(__name__)
 
-(CHOOSE_CURRENCY, CURRENCY_OTHER, CHOOSE_CATEGORY, ASK_COMMENT, ASK_DATE,
- PICK_DATE) = range(6)
+CARD, AWAIT_TEXT = range(2)
 
 ENTRY_RE = re.compile(r"^\s*(\d+(?:[.,]\d{1,2})?)\s+(.+)$")
+_AMOUNT_RE = re.compile(r"^\d+(?:[.,]\d{1,2})?$")
 _CURRENCY_RE = re.compile(r"^[A-Za-z]{3}$")
 _DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
+_CARD_TEXT = "📝 *New expense* — tap a field to edit, then *Save*."
+_CARD_TEXT_NO_CATEGORY = _CARD_TEXT + "\n\n⚠️ Pick a category first."
+
+
+# ── Card rendering ───────────────────────────────────────────────────────────
+
+async def _set_card_message(context, text, markup) -> None:
+    await context.bot.edit_message_text(
+        chat_id=context.user_data["card_chat"],
+        message_id=context.user_data["card_msg"],
+        text=text,
+        parse_mode="Markdown",
+        reply_markup=markup,
+    )
+
+
+async def _show_card(context, missing_category: bool = False) -> int:
+    draft = context.user_data["draft"]
+    default = context.user_data["default_currency"]
+    text = _CARD_TEXT_NO_CATEGORY if missing_category else _CARD_TEXT
+    await _set_card_message(context, text, expense_card_keyboard(draft, default))
+    return CARD
+
+
+async def _prompt_text(context, field: str, prompt: str) -> int:
+    context.user_data["editing"] = field
+    await _set_card_message(context, prompt, back_keyboard())
+    return AWAIT_TEXT
+
+
+# ── Entry ────────────────────────────────────────────────────────────────────
 
 async def entry(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     pool = context.bot_data["pool"]
@@ -42,187 +74,212 @@ async def entry(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         return ConversationHandler.END
 
     match = ENTRY_RE.match(update.message.text)
-    if not match:  # Shouldn't happen given the entry filter, but be safe.
+    if not match:
         return ConversationHandler.END
 
-    amount = float(match.group(1).replace(",", "."))
     place = match.group(2).strip()
-    context.user_data["expense"] = {"amount": amount, "place": place}
+    known = await db.list_place_categories(pool, update.effective_user.id)
+    suggested = suggest_category(normalize_place(place), known)
 
-    await update.message.reply_text(
-        f"💸 *{amount:g}* at *{place}* — which currency?",
+    context.user_data["default_currency"] = user["default_currency"]
+    context.user_data["draft"] = {
+        "amount": float(match.group(1).replace(",", ".")),
+        "place": place,
+        "currency": user["default_currency"],
+        "category": suggested,
+        "comment": "",
+        "date": dt.date.today(),
+    }
+
+    sent = await update.message.reply_text(
+        _CARD_TEXT,
         parse_mode="Markdown",
-        reply_markup=currency_keyboard(default=user["default_currency"]),
+        reply_markup=expense_card_keyboard(
+            context.user_data["draft"], user["default_currency"]
+        ),
     )
-    return CHOOSE_CURRENCY
+    context.user_data["card_chat"] = sent.chat_id
+    context.user_data["card_msg"] = sent.message_id
+    return CARD
 
 
-async def choose_currency(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+# ── Field taps (CARD state) ──────────────────────────────────────────────────
+
+async def tap_field(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    await query.answer()
+    field = query.data.split(":", 1)[1]
+    draft = context.user_data["draft"]
+
+    if field == "amount":
+        return await _prompt_text(context, "amount", "💰 Send the new amount:")
+    if field == "place":
+        return await _prompt_text(context, "place", "📍 Send the new place:")
+    if field == "comment":
+        return await _prompt_text(context, "comment", "💬 Send a comment:")
+    if field == "currency":
+        await _set_card_message(context, "Select currency:",
+                                card_currency_picker(draft["currency"]))
+        return CARD
+    if field == "category":
+        await _set_card_message(context, "Select category:",
+                                card_category_picker(draft["category"]))
+        return CARD
+    if field == "date":
+        await _set_card_message(context, "Select date:", card_date_picker())
+        return CARD
+    return CARD
+
+
+async def pick_currency(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
     await query.answer()
     code = query.data.split(":", 1)[1]
     if code == "OTHER":
-        await query.edit_message_text("Send the 3-letter currency code (e.g. `GBP`).",
-                                      parse_mode="Markdown")
-        return CURRENCY_OTHER
-    context.user_data["expense"]["currency"] = code
-    return await _ask_category(update, context, edit=True)
+        return await _prompt_text(context, "currency",
+                                  "💱 Send a 3-letter currency code (e.g. `GBP`):")
+    context.user_data["draft"]["currency"] = code
+    return await _show_card(context)
 
 
-async def receive_currency_other(
-    update: Update, context: ContextTypes.DEFAULT_TYPE
-) -> int:
-    code = update.message.text.strip().upper()
-    if not _CURRENCY_RE.match(code):
-        await update.message.reply_text("Please send a 3-letter code, e.g. `GBP`.",
-                                        parse_mode="Markdown")
-        return CURRENCY_OTHER
-    context.user_data["expense"]["currency"] = code
-    return await _ask_category(update, context, edit=False)
-
-
-async def _ask_category(
-    update: Update, context: ContextTypes.DEFAULT_TYPE, edit: bool
-) -> int:
-    pool = context.bot_data["pool"]
-    place_norm = normalize_place(context.user_data["expense"]["place"])
-    known = await db.list_place_categories(pool, update.effective_user.id)
-    suggested = suggest_category(place_norm, known)
-    context.user_data["expense"]["suggested"] = suggested
-
-    text = "Pick a category:"
-    markup = category_keyboard(suggested=suggested)
-    if edit:
-        await update.callback_query.edit_message_text(text, reply_markup=markup)
-    else:
-        await update.message.reply_text(text, reply_markup=markup)
-    return CHOOSE_CATEGORY
-
-
-async def choose_category(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+async def pick_category(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
     await query.answer()
     value = query.data.split(":", 1)[1]
-
     if value == "__more__":
-        suggested = context.user_data["expense"].get("suggested")
         await query.edit_message_reply_markup(
-            reply_markup=category_keyboard(suggested=suggested, expanded=True)
+            reply_markup=card_category_picker(
+                context.user_data["draft"]["category"], expanded=True
+            )
         )
-        return CHOOSE_CATEGORY
-
-    context.user_data["expense"]["category"] = value
-    await query.edit_message_text(
-        f"Category: *{value}*. Add a comment, or skip.",
-        parse_mode="Markdown",
-        reply_markup=comment_keyboard(),
-    )
-    return ASK_COMMENT
+        return CARD
+    context.user_data["draft"]["category"] = value
+    return await _show_card(context)
 
 
-async def skip_comment(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    query = update.callback_query
-    await query.answer()
-    context.user_data["expense"]["comment"] = ""
-    await query.edit_message_text("When was it?", reply_markup=date_keyboard())
-    return ASK_DATE
-
-
-async def receive_comment(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    context.user_data["expense"]["comment"] = update.message.text.strip()
-    await update.message.reply_text("When was it?", reply_markup=date_keyboard())
-    return ASK_DATE
-
-
-async def choose_date(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+async def pick_date(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
     await query.answer()
     choice = query.data.split(":", 1)[1]
     today = dt.date.today()
-
     if choice == "today":
-        return await _finalize(update, context, today, edit=True)
-    if choice == "yesterday":
-        return await _finalize(update, context, today - dt.timedelta(days=1), edit=True)
+        context.user_data["draft"]["date"] = today
+    elif choice == "yesterday":
+        context.user_data["draft"]["date"] = today - dt.timedelta(days=1)
+    elif choice == "pick":
+        return await _prompt_text(context, "date", "📅 Send the date as `YYYY-MM-DD`:")
+    return await _show_card(context)
 
-    await query.edit_message_text("Send the date as `YYYY-MM-DD`.", parse_mode="Markdown")
-    return PICK_DATE
+
+async def back_to_card(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    await update.callback_query.answer()
+    context.user_data.pop("editing", None)
+    return await _show_card(context)
 
 
-async def receive_date(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+# ── Typed edits (AWAIT_TEXT state) ───────────────────────────────────────────
+
+async def receive_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    field = context.user_data.get("editing")
     text = update.message.text.strip()
-    if not _DATE_RE.match(text):
-        await update.message.reply_text("Please use the format `YYYY-MM-DD`.",
-                                        parse_mode="Markdown")
-        return PICK_DATE
-    try:
-        date = dt.date.fromisoformat(text)
-    except ValueError:
-        await update.message.reply_text("That's not a valid date. Try `YYYY-MM-DD`.",
-                                        parse_mode="Markdown")
-        return PICK_DATE
-    return await _finalize(update, context, date, edit=False)
+    draft = context.user_data["draft"]
+
+    if field == "amount":
+        if not _AMOUNT_RE.match(text):
+            await update.message.reply_text("Please send a number, e.g. `2500`.",
+                                            parse_mode="Markdown")
+            return AWAIT_TEXT
+        draft["amount"] = float(text.replace(",", "."))
+    elif field == "place":
+        draft["place"] = text
+    elif field == "comment":
+        draft["comment"] = text
+    elif field == "currency":
+        if not _CURRENCY_RE.match(text):
+            await update.message.reply_text("Please send a 3-letter code, e.g. `GBP`.",
+                                            parse_mode="Markdown")
+            return AWAIT_TEXT
+        draft["currency"] = text.upper()
+    elif field == "date":
+        if not _DATE_RE.match(text):
+            await update.message.reply_text("Please use `YYYY-MM-DD`.",
+                                            parse_mode="Markdown")
+            return AWAIT_TEXT
+        try:
+            draft["date"] = dt.date.fromisoformat(text)
+        except ValueError:
+            await update.message.reply_text("That's not a valid date. Try `YYYY-MM-DD`.",
+                                            parse_mode="Markdown")
+            return AWAIT_TEXT
+
+    context.user_data.pop("editing", None)
+    return await _show_card(context)
 
 
-async def _finalize(
-    update: Update, context: ContextTypes.DEFAULT_TYPE, expense_date: dt.date, edit: bool
-) -> int:
+# ── Save / cancel ────────────────────────────────────────────────────────────
+
+async def save(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    draft = context.user_data["draft"]
+
+    if not draft["category"]:
+        await query.answer("Pick a category first", show_alert=False)
+        return await _show_card(context, missing_category=True)
+
+    await query.answer("Saving…")
     pool = context.bot_data["pool"]
     rates = context.bot_data["rates"]
     sheets = context.bot_data["sheets"]
     tg_id = update.effective_user.id
-
     user = await db.get_user(pool, tg_id)
-    exp = context.user_data["expense"]
     base_currency = user["base_currency"]
 
-    amount_base = await rates.convert(exp["amount"], exp["currency"], base_currency)
+    amount_base = await rates.convert(draft["amount"], draft["currency"], base_currency)
 
-    recorded_at = dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     row = [
-        recorded_at,
-        expense_date.isoformat(),
-        exp["amount"],
-        exp["currency"],
+        dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        draft["date"].isoformat(),
+        draft["amount"],
+        draft["currency"],
         "" if amount_base is None else amount_base,
         base_currency,
-        exp["category"],
-        exp["place"],
-        exp.get("comment", ""),
+        draft["category"],
+        draft["place"],
+        draft["comment"],
     ]
 
     try:
         await sheets.append_expense(user["sheet_id"], row)
     except Exception:
         logger.exception("Failed to append row for user %s", tg_id)
-        await _reply(update, edit,
-                     "⚠️ Couldn't write to your sheet. Is it still shared with me?")
+        await _set_card_message(
+            context, "⚠️ Couldn't write to your sheet. Is it still shared with me?", None
+        )
         context.user_data.clear()
         return ConversationHandler.END
 
-    # Learn the place -> category mapping for next time.
     await db.upsert_place_category(
-        pool, tg_id, normalize_place(exp["place"]), exp["category"]
+        pool, tg_id, normalize_place(draft["place"]), draft["category"]
     )
 
     if amount_base is None:
-        converted = f"(couldn't convert {exp['currency']}→{base_currency})"
+        converted = f"(couldn't convert {draft['currency']}→{base_currency})"
     else:
         converted = f"≈ {amount_base:g} {base_currency}"
     summary = (
-        f"✅ Saved: *{exp['amount']:g} {exp['currency']}* {converted}\n"
-        f"{exp['category']} · {exp['place']} · {expense_date.isoformat()}"
+        f"✅ Saved: *{draft['amount']:g} {draft['currency']}* {converted}\n"
+        f"{draft['category']} · {draft['place']} · {draft['date'].isoformat()}"
     )
-    await _reply(update, edit, summary)
+    await _set_card_message(context, summary, None)
     context.user_data.clear()
     return ConversationHandler.END
 
 
-async def _reply(update: Update, edit: bool, text: str) -> None:
-    if edit and update.callback_query:
-        await update.callback_query.edit_message_text(text, parse_mode="Markdown")
-    else:
-        await update.effective_message.reply_text(text, parse_mode="Markdown")
+async def cancel_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    await update.callback_query.answer()
+    await _set_card_message(context, "✖ Cancelled.", None)
+    context.user_data.clear()
+    return ConversationHandler.END
 
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -237,18 +294,18 @@ def build_handler() -> ConversationHandler:
             MessageHandler(filters.Regex(ENTRY_RE) & ~filters.COMMAND, entry)
         ],
         states={
-            CHOOSE_CURRENCY: [CallbackQueryHandler(choose_currency, pattern=r"^cur:")],
-            CURRENCY_OTHER: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, receive_currency_other)
+            CARD: [
+                CallbackQueryHandler(tap_field, pattern=r"^f:"),
+                CallbackQueryHandler(pick_currency, pattern=r"^pc:"),
+                CallbackQueryHandler(pick_category, pattern=r"^pk:"),
+                CallbackQueryHandler(pick_date, pattern=r"^pd:"),
+                CallbackQueryHandler(back_to_card, pattern=r"^card$"),
+                CallbackQueryHandler(save, pattern=r"^save$"),
+                CallbackQueryHandler(cancel_button, pattern=r"^cancel$"),
             ],
-            CHOOSE_CATEGORY: [CallbackQueryHandler(choose_category, pattern=r"^cat:")],
-            ASK_COMMENT: [
-                CallbackQueryHandler(skip_comment, pattern=r"^comment:skip$"),
-                MessageHandler(filters.TEXT & ~filters.COMMAND, receive_comment),
-            ],
-            ASK_DATE: [CallbackQueryHandler(choose_date, pattern=r"^date:")],
-            PICK_DATE: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, receive_date)
+            AWAIT_TEXT: [
+                CallbackQueryHandler(back_to_card, pattern=r"^card$"),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, receive_text),
             ],
         },
         fallbacks=[CommandHandler("cancel", cancel)],
