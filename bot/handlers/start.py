@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import re
 
-from telegram import Update
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import (
     CommandHandler,
     ContextTypes,
@@ -38,20 +38,27 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 
     sheets = context.bot_data["sheets"]
     template = _template_link(context)
-    template_line = (
-        f"1. Open the template and make a copy:\n{template}\n\n"
-        if template
-        else "1. Create a Google Sheet with the expected columns.\n\n"
-    )
+
+    if template:
+        # URL goes in a button, not inline text — Markdown would mangle the
+        # underscores in the sheet ID.
+        step1 = "1. Open the template below and make a copy.\n\n"
+        markup = InlineKeyboardMarkup(
+            [[InlineKeyboardButton("📄 Open template", url=template)]]
+        )
+    else:
+        step1 = "1. Create a Google Sheet with the expected columns.\n\n"
+        markup = None
 
     await update.message.reply_text(
         "👋 Welcome to *Treant Finance*!\n\n"
         "Let's connect your Google Sheet:\n\n"
-        f"{template_line}"
+        f"{step1}"
         "2. Click *Share* and add this address as *Editor*:\n"
         f"`{sheets.client_email}`\n\n"
         "3. Paste the link to your sheet here.",
         parse_mode="Markdown",
+        reply_markup=markup,
     )
     return ASK_SHEET
 
