@@ -19,7 +19,7 @@ class RateService:
 
     async def _rates_for(self, base: str) -> dict | None:
         """Return today's {currency: rate-per-1-base} map for `base`, cached daily."""
-        today = dt.date.today().isoformat()
+        today = dt.date.today()
         cached = await db.get_cached_rates(self._pool, base, today)
         if cached is not None:
             return cached

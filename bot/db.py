@@ -1,6 +1,7 @@
 """PostgreSQL access via asyncpg."""
 from __future__ import annotations
 
+import datetime as dt
 import json
 from pathlib import Path
 
@@ -97,14 +98,14 @@ async def upsert_place_category(
 # ── Rate cache ───────────────────────────────────────────────────────────────
 
 async def get_cached_rates(
-    pool: asyncpg.Pool, base: str, date_str: str
+    pool: asyncpg.Pool, base: str, date: dt.date
 ) -> dict | None:
     async with pool.acquire() as conn:
         value = await conn.fetchval(
             "SELECT rates FROM rate_cache "
             "WHERE base_currency = $1 AND fetched_date = $2",
             base,
-            date_str,
+            date,
         )
     if value is None:
         return None
@@ -112,7 +113,7 @@ async def get_cached_rates(
 
 
 async def save_cached_rates(
-    pool: asyncpg.Pool, base: str, date_str: str, rates: dict
+    pool: asyncpg.Pool, base: str, date: dt.date, rates: dict
 ) -> None:
     async with pool.acquire() as conn:
         await conn.execute(
@@ -123,6 +124,6 @@ async def save_cached_rates(
             DO UPDATE SET rates = EXCLUDED.rates
             """,
             base,
-            date_str,
+            date,
             json.dumps(rates),
         )
