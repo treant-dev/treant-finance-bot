@@ -95,15 +95,25 @@ Compose project — it does not touch Cram's compose, network, or database.
 
 ### 1. Get the project onto the server
 
-```bash
-sudo mkdir -p /opt/finance-tracker
-sudo chown "$USER" /opt/finance-tracker
-cd /opt/finance-tracker
+The repo is private and the server has no GitHub auth, so the simplest push is
+`git archive` from your machine (sends only committed files — no secrets, no `.git`):
 
-git clone <your-repo-url> .       # or rsync/scp the project up
-cp .env.example .env              # then edit with real values
-# upload service_account.json into /opt/finance-tracker/ and lock it down:
-chmod 600 service_account.json
+```bash
+# from your local checkout:
+ssh root@<server> 'mkdir -p /opt/finance-tracker'
+git archive --format=tar HEAD | ssh root@<server> 'tar xf - -C /opt/finance-tracker'
+# copy secrets separately (never committed):
+scp .env service_account.json root@<server>:/opt/finance-tracker/
+```
+
+Then on the server, lock down the secrets. **Important:** the container runs as a
+non-root user (uid 1000), so the service-account file must be *owned* by that uid —
+`chmod 600` alone leaves it root-owned and the bot gets `PermissionError`:
+
+```bash
+cd /opt/finance-tracker
+chmod 600 .env
+chown 1000:1000 service_account.json && chmod 600 service_account.json
 ```
 
 ### 2. Create the data directory on the persistent volume
@@ -130,10 +140,10 @@ docker compose ps
 # follow logs
 docker compose logs -f bot
 
-# deploy an update
-cd /opt/finance-tracker
-git pull
-docker compose up -d --build      # rebuilds the bot image; the DB data on the volume is untouched
+# deploy an update (from your local checkout)
+git archive --format=tar HEAD | ssh root@<server> 'tar xf - -C /opt/finance-tracker'
+ssh root@<server> 'cd /opt/finance-tracker && docker compose up -d --build'
+# rebuilds the bot image; the DB data on /mnt/cram-data/finance/postgres is untouched
 ```
 
 `restart: unless-stopped` means both containers come back automatically after a crash
