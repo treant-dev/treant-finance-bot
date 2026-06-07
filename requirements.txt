@@ -16,3 +16,6 @@ rapidfuzz>=3.0,<4.0
 
 # Load config / secrets from environment
 python-dotenv>=1.0,<2.0
+
+# Timezone database (zoneinfo has no data on slim images)
+tzdata>=2024.1

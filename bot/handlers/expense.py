@@ -15,7 +15,7 @@ from telegram.ext import (
     filters,
 )
 
-from .. import db
+from .. import clock, db
 from ..categories import normalize_place, suggest_category
 from ..keyboards import (
     back_keyboard,
@@ -88,7 +88,7 @@ async def entry(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         "currency": user["default_currency"],
         "category": suggested,
         "comment": "",
-        "date": dt.date.today(),
+        "date": clock.today(),
     }
 
     sent = await update.message.reply_text(
@@ -161,7 +161,7 @@ async def pick_date(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
     await query.answer()
     choice = query.data.split(":", 1)[1]
-    today = dt.date.today()
+    today = clock.today()
     if choice == "today":
         context.user_data["draft"]["date"] = today
     elif choice == "yesterday":
@@ -237,7 +237,7 @@ async def save(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     amount_base = await rates.convert(draft["amount"], draft["currency"], base_currency)
 
     row = [
-        dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        clock.now().strftime("%Y-%m-%d %H:%M:%S"),
         draft["date"].isoformat(),
         draft["amount"],
         draft["currency"],

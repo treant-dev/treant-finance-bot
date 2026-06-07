@@ -1,13 +1,12 @@
 """Currency conversion via ExchangeRate-API (no key), cached daily in Postgres."""
 from __future__ import annotations
 
-import datetime as dt
 import logging
 
 import asyncpg
 import httpx
 
-from . import db
+from . import clock, db
 
 logger = logging.getLogger(__name__)
 
@@ -19,7 +18,7 @@ class RateService:
 
     async def _rates_for(self, base: str) -> dict | None:
         """Return today's {currency: rate-per-1-base} map for `base`, cached daily."""
-        today = dt.date.today()
+        today = clock.today()
         cached = await db.get_cached_rates(self._pool, base, today)
         if cached is not None:
             return cached

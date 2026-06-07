@@ -6,7 +6,7 @@ import logging
 from telegram import BotCommand
 from telegram.ext import Application, ApplicationBuilder
 
-from bot import db
+from bot import clock, db
 from bot.config import Config
 from bot.handlers import expense, settings, start
 from bot.rates import RateService
@@ -44,6 +44,7 @@ async def _post_shutdown(app: Application) -> None:
 
 def main() -> None:
     config = Config.load()
+    clock.configure(config.timezone)
     application = (
         ApplicationBuilder()
         .token(config.bot_token)

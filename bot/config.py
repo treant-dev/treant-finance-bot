@@ -20,6 +20,7 @@ class Config:
     database_url: str
     exchange_rate_base_url: str
     template_sheet_url: str
+    timezone: str
 
     @staticmethod
     def load() -> "Config":
@@ -37,4 +38,5 @@ class Config:
                 "EXCHANGE_RATE_BASE_URL", "https://open.er-api.com/v6/latest"
             ).rstrip("/"),
             template_sheet_url=os.environ.get("TEMPLATE_SHEET_URL", ""),
+            timezone=os.environ.get("BOT_TIMEZONE", "Europe/Belgrade"),
         )

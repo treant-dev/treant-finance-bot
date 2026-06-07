@@ -5,6 +5,7 @@ import datetime as dt
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
+from . import clock
 from .categories import EXTENDED_CATEGORIES, QUICK_CATEGORIES
 
 # Currencies offered on expense entry (default marked with a dot).
@@ -20,7 +21,7 @@ def _chunk(items: list, size: int) -> list[list]:
 
 
 def _date_label(d: dt.date) -> str:
-    today = dt.date.today()
+    today = clock.today()
     if d == today:
         return "Today"
     if d == today - dt.timedelta(days=1):
