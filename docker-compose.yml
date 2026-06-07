@@ -20,6 +20,10 @@ services:
     build: .
     restart: unless-stopped
     env_file: .env
+    environment:
+      # Single source of truth: derive the DB URL from POSTGRES_PASSWORD so the
+      # bot and db can never disagree (this overrides any DATABASE_URL in .env).
+      DATABASE_URL: postgresql://expense_bot:${POSTGRES_PASSWORD}@db:5432/expense_bot
     depends_on:
       db:
         condition: service_healthy
