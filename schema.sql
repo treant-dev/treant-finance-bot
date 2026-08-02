@@ -17,8 +17,21 @@ CREATE TABLE IF NOT EXISTS place_category (
     telegram_user_id BIGINT      NOT NULL REFERENCES users(telegram_user_id) ON DELETE CASCADE,
     place            TEXT        NOT NULL,   -- normalized (lowercased, trimmed)
     category         TEXT        NOT NULL,
+    currency         TEXT,                   -- last currency used here; NULL = unknown
     updated_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
     PRIMARY KEY (telegram_user_id, place)
+);
+
+-- Migration for existing installs: unknown for places recorded before this.
+ALTER TABLE place_category ADD COLUMN IF NOT EXISTS currency TEXT;
+
+-- Per-user extra categories, on top of the built-in ones in bot/categories.py
+-- (defaults live in code, so they are not duplicated per user).
+CREATE TABLE IF NOT EXISTS custom_category (
+    telegram_user_id BIGINT      NOT NULL REFERENCES users(telegram_user_id) ON DELETE CASCADE,
+    name             TEXT        NOT NULL,
+    created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (telegram_user_id, name)
 );
 
 -- Daily exchange-rate cache. One row per (base_currency, fetched_date);

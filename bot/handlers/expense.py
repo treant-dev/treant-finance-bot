@@ -16,7 +16,7 @@ from telegram.ext import (
 )
 
 from .. import clock, db
-from ..categories import normalize_place, suggest_category
+from ..categories import normalize_place, suggest_place
 from ..keyboards import (
     back_keyboard,
     card_category_picker,
@@ -79,14 +79,19 @@ async def entry(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 
     place = match.group(2).strip()
     known = await db.list_place_categories(pool, update.effective_user.id)
-    suggested = suggest_category(normalize_place(place), known)
+    remembered_category, remembered_currency = suggest_place(
+        normalize_place(place), known
+    ) or (None, None)
 
     context.user_data["default_currency"] = user["default_currency"]
+    context.user_data["custom_categories"] = await db.list_custom_categories(
+        pool, update.effective_user.id
+    )
     context.user_data["draft"] = {
         "amount": float(match.group(1).replace(",", ".")),
         "place": place,
-        "currency": user["default_currency"],
-        "category": suggested,
+        "currency": remembered_currency or user["default_currency"],
+        "category": remembered_category,
         "comment": "",
         "date": clock.today(),
     }
@@ -122,8 +127,13 @@ async def tap_field(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
                                 card_currency_picker(draft["currency"]))
         return CARD
     if field == "category":
-        await _set_card_message(context, "Select category:",
-                                card_category_picker(draft["category"]))
+        await _set_card_message(
+            context,
+            "Select category:",
+            card_category_picker(
+                draft["category"], custom=context.user_data["custom_categories"]
+            ),
+        )
         return CARD
     if field == "date":
         await _set_card_message(context, "Select date:", card_date_picker())
@@ -149,7 +159,9 @@ async def pick_category(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
     if value == "__more__":
         await query.edit_message_reply_markup(
             reply_markup=card_category_picker(
-                context.user_data["draft"]["category"], expanded=True
+                context.user_data["draft"]["category"],
+                expanded=True,
+                custom=context.user_data["custom_categories"],
             )
         )
         return CARD
@@ -259,7 +271,11 @@ async def save(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         return ConversationHandler.END
 
     await db.upsert_place_category(
-        pool, tg_id, normalize_place(draft["place"]), draft["category"]
+        pool,
+        tg_id,
+        normalize_place(draft["place"]),
+        draft["category"],
+        draft["currency"],
     )
 
     if amount_base is None:

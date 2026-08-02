@@ -14,9 +14,19 @@ from telegram.ext import (
 )
 
 from .. import db
-from ..keyboards import settings_currency_keyboard, settings_menu_keyboard
+from ..categories import (
+    MAX_CATEGORY_NAME_LEN,
+    MAX_CUSTOM_CATEGORIES,
+    is_default_category,
+    normalize_category,
+)
+from ..keyboards import (
+    categories_menu_keyboard,
+    settings_currency_keyboard,
+    settings_menu_keyboard,
+)
 
-S_MENU, S_BASE_OTHER, S_DEFAULT_OTHER = range(3)
+S_MENU, S_BASE_OTHER, S_DEFAULT_OTHER, S_CAT_NAME = range(4)
 
 _CURRENCY_RE = re.compile(r"^[A-Za-z]{3}$")
 _MENU_TEXT = "⚙️ *Settings* — tap a setting to change it."
@@ -120,6 +130,77 @@ async def receive_default_other(update: Update,
     return await _render_menu(update, context, edit=False)
 
 
+# ── Custom categories ────────────────────────────────────────────────────────
+
+async def _render_categories(update: Update, context: ContextTypes.DEFAULT_TYPE,
+                             edit: bool, note: str = "") -> int:
+    custom = await db.list_custom_categories(context.bot_data["pool"],
+                                             update.effective_user.id)
+    text = (
+        f"🏷 *My categories* — {len(custom)}/{MAX_CUSTOM_CATEGORIES} used.\n"
+        "These are added to the built-in ones. Tap 🗑 to remove."
+    )
+    if note:
+        text = f"{note}\n\n{text}"
+    markup = categories_menu_keyboard(
+        custom, at_limit=len(custom) >= MAX_CUSTOM_CATEGORIES
+    )
+    if edit and update.callback_query:
+        await update.callback_query.edit_message_text(
+            text, parse_mode="Markdown", reply_markup=markup
+        )
+    else:
+        await update.effective_message.reply_text(
+            text, parse_mode="Markdown", reply_markup=markup
+        )
+    return S_MENU
+
+
+async def open_categories(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    await update.callback_query.answer()
+    return await _render_categories(update, context, edit=True)
+
+
+async def prompt_category(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    await query.answer()
+    await query.edit_message_text(
+        f"Send the new category name (up to {MAX_CATEGORY_NAME_LEN} characters).",
+    )
+    return S_CAT_NAME
+
+
+async def receive_category(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    name = normalize_category(update.message.text)
+    if not name or len(name) > MAX_CATEGORY_NAME_LEN:
+        await update.message.reply_text(
+            f"Name must be 1–{MAX_CATEGORY_NAME_LEN} characters. Try again."
+        )
+        return S_CAT_NAME
+    if is_default_category(name):
+        await update.message.reply_text(
+            f"*{name}* already exists as a built-in category.", parse_mode="Markdown"
+        )
+        return await _render_categories(update, context, edit=False)
+
+    added = await db.add_custom_category(
+        context.bot_data["pool"], update.effective_user.id, name,
+        MAX_CUSTOM_CATEGORIES,
+    )
+    note = f"✅ Added *{name}*." if added else f"⚠️ Couldn't add *{name}*."
+    return await _render_categories(update, context, edit=False, note=note)
+
+
+async def delete_category(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    name = query.data.split(":", 1)[1]
+    await query.answer(f"Removed {name}")
+    await db.delete_custom_category(context.bot_data["pool"],
+                                    update.effective_user.id, name)
+    return await _render_categories(update, context, edit=True,
+                                    note=f"🗑 Removed *{name}*.")
+
+
 async def show_sheet(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
     await query.answer()
@@ -162,6 +243,10 @@ def build_handler() -> ConversationHandler:
             S_MENU: [
                 CallbackQueryHandler(open_base, pattern=r"^settings:base$"),
                 CallbackQueryHandler(open_default, pattern=r"^settings:default$"),
+                CallbackQueryHandler(open_categories,
+                                     pattern=r"^settings:categories$"),
+                CallbackQueryHandler(prompt_category, pattern=r"^catadd$"),
+                CallbackQueryHandler(delete_category, pattern=r"^catdel:"),
                 CallbackQueryHandler(show_sheet, pattern=r"^settings:sheet$"),
                 CallbackQueryHandler(back_to_menu, pattern=r"^settings:menu$"),
                 CallbackQueryHandler(close, pattern=r"^settings:close$"),
@@ -173,6 +258,11 @@ def build_handler() -> ConversationHandler:
             ],
             S_DEFAULT_OTHER: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, receive_default_other)
+            ],
+            S_CAT_NAME: [
+                CallbackQueryHandler(open_categories,
+                                     pattern=r"^settings:categories$"),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, receive_category),
             ],
         },
         fallbacks=[CommandHandler("cancel", cancel)],

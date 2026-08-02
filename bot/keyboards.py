@@ -83,7 +83,9 @@ def card_currency_picker(current: str) -> InlineKeyboardMarkup:
 
 
 def card_category_picker(
-    suggested: str | None = None, expanded: bool = False
+    suggested: str | None = None,
+    expanded: bool = False,
+    custom: list[str] | None = None,
 ) -> InlineKeyboardMarkup:
     rows: list[list[InlineKeyboardButton]] = []
     if suggested:
@@ -93,7 +95,11 @@ def card_category_picker(
     quick = [InlineKeyboardButton(c, callback_data=f"pk:{c}") for c in QUICK_CATEGORIES]
     rows.extend(_chunk(quick, 2))
     if expanded:
-        ext = [InlineKeyboardButton(c, callback_data=f"pk:{c}") for c in EXTENDED_CATEGORIES]
+        # User's own categories come last, after the built-in extended ones.
+        ext = [
+            InlineKeyboardButton(c, callback_data=f"pk:{c}")
+            for c in EXTENDED_CATEGORIES + (custom or [])
+        ]
         rows.extend(_chunk(ext, 2))
     else:
         rows.append([InlineKeyboardButton("More…", callback_data="pk:__more__")])
@@ -127,11 +133,27 @@ def settings_menu_keyboard(base: str, default: str) -> InlineKeyboardMarkup:
                                   callback_data="settings:base")],
             [InlineKeyboardButton(f"🪙 Default input: {default}",
                                   callback_data="settings:default")],
+            [InlineKeyboardButton("🏷 My categories",
+                                  callback_data="settings:categories")],
             [InlineKeyboardButton("📄 Connected sheet",
                                   callback_data="settings:sheet")],
             [InlineKeyboardButton("🏁 Close", callback_data="settings:close")],
         ]
     )
+
+
+def categories_menu_keyboard(
+    custom: list[str], at_limit: bool
+) -> InlineKeyboardMarkup:
+    """Management menu: one delete button per custom category, plus Add."""
+    rows = [
+        [InlineKeyboardButton(f"🗑 {name}", callback_data=f"catdel:{name}")]
+        for name in custom
+    ]
+    if not at_limit:
+        rows.append([InlineKeyboardButton("➕ Add category", callback_data="catadd")])
+    rows.append([InlineKeyboardButton("« Back", callback_data="settings:menu")])
+    return InlineKeyboardMarkup(rows)
 
 
 def settings_currency_keyboard(prefix: str, current: str) -> InlineKeyboardMarkup:

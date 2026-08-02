@@ -73,44 +73,86 @@ async def update_default_currency(pool: asyncpg.Pool, tg_id: int, code: str) -> 
 
 # ── Place -> category dictionary ─────────────────────────────────────────────
 
-async def get_place_category(
-    pool: asyncpg.Pool, tg_id: int, place_norm: str
-) -> str | None:
-    async with pool.acquire() as conn:
-        return await conn.fetchval(
-            "SELECT category FROM place_category "
-            "WHERE telegram_user_id = $1 AND place = $2",
-            tg_id,
-            place_norm,
-        )
-
-
 async def list_place_categories(
     pool: asyncpg.Pool, tg_id: int
-) -> list[tuple[str, str]]:
+) -> list[tuple[str, str, str | None]]:
     async with pool.acquire() as conn:
         rows = await conn.fetch(
-            "SELECT place, category FROM place_category WHERE telegram_user_id = $1",
+            "SELECT place, category, currency FROM place_category "
+            "WHERE telegram_user_id = $1",
             tg_id,
         )
-    return [(r["place"], r["category"]) for r in rows]
+    return [(r["place"], r["category"], r["currency"]) for r in rows]
 
 
 async def upsert_place_category(
-    pool: asyncpg.Pool, tg_id: int, place_norm: str, category: str
+    pool: asyncpg.Pool, tg_id: int, place_norm: str, category: str, currency: str
 ) -> None:
     async with pool.acquire() as conn:
         await conn.execute(
             """
-            INSERT INTO place_category (telegram_user_id, place, category)
-            VALUES ($1, $2, $3)
+            INSERT INTO place_category (telegram_user_id, place, category, currency)
+            VALUES ($1, $2, $3, $4)
             ON CONFLICT (telegram_user_id, place)
-            DO UPDATE SET category = EXCLUDED.category, updated_at = now()
+            DO UPDATE SET category = EXCLUDED.category,
+                          currency = EXCLUDED.currency,
+                          updated_at = now()
             """,
             tg_id,
             place_norm,
             category,
+            currency,
         )
+
+
+# ── Custom categories ────────────────────────────────────────────────────────
+
+async def list_custom_categories(pool: asyncpg.Pool, tg_id: int) -> list[str]:
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT name FROM custom_category WHERE telegram_user_id = $1 "
+            "ORDER BY created_at",
+            tg_id,
+        )
+    return [r["name"] for r in rows]
+
+
+async def add_custom_category(
+    pool: asyncpg.Pool, tg_id: int, name: str, limit: int
+) -> bool:
+    """Add a category. False if the user is at `limit` or already has this name."""
+    async with pool.acquire() as conn:
+        status = await conn.execute(
+            """
+            INSERT INTO custom_category (telegram_user_id, name)
+            SELECT $1, $2
+            WHERE (SELECT count(*) FROM custom_category
+                   WHERE telegram_user_id = $1) < $3
+            ON CONFLICT (telegram_user_id, name) DO NOTHING
+            """,
+            tg_id,
+            name,
+            limit,
+        )
+    return status.endswith(" 1")
+
+
+async def delete_custom_category(pool: asyncpg.Pool, tg_id: int, name: str) -> None:
+    """Drop the category and any place mappings that pointed at it."""
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            await conn.execute(
+                "DELETE FROM place_category "
+                "WHERE telegram_user_id = $1 AND category = $2",
+                tg_id,
+                name,
+            )
+            await conn.execute(
+                "DELETE FROM custom_category "
+                "WHERE telegram_user_id = $1 AND name = $2",
+                tg_id,
+                name,
+            )
 
 
 # ── Rate cache ───────────────────────────────────────────────────────────────
